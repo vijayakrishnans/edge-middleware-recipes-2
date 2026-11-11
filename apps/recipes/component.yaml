@@ -1,0 +1,102 @@
+apiVersion: sourceplane.io/v1
+kind: Component
+metadata:
+  name: recipes
+  description: The Edge Middleware recipes (one plain Cloudflare Worker, Hono-routed, per environment)
+spec:
+  type: cloudflare-worker-turbo
+  lifecycle: production
+  owner: platform
+  # Its pages, attached to it in the workspace's catalog: what the Docs
+  # library shows for it, and what the catalog's docs and runbook checks read.
+  # Generated from what this manifest and its sources declare.
+  docs:
+    overview: docs/overview.md
+    pages:
+      - { path: docs/architecture.md, role: architecture, title: Architecture }
+      - { path: docs/runbook.md, role: runbook, title: Runbook }
+  # `app`, not `recipes`: a domain and a component share one name space in
+  # the catalog, and a domain called `recipes` hid this component from it.
+  domain: app
+  path: apps/recipes
+  # The basic-auth recipe's pair, owner-seeded rather than brokered: no
+  # provider holds it, so nothing mints it. Best-effort references — an
+  # unseeded key is skipped when the deploy job resolves its secrets, and the
+  # secrets-live step pushes only the keys that have a value — so this block is
+  # inert until somebody runs `orun secrets set BASIC_AUTH_USER --env <env>`
+  # (and BASIC_AUTH_PASSWORD). Until then the recipe answers its setup page.
+  optionalSecretEnv:
+    BASIC_AUTH_USER: "secret://org_f9a2368925444cdfafd0c9251c90b5e0/edge-middleware-recipes-2/{{ .environment }}/BASIC_AUTH_USER"
+    BASIC_AUTH_PASSWORD: "secret://org_f9a2368925444cdfafd0c9251c90b5e0/edge-middleware-recipes-2/{{ .environment }}/BASIC_AUTH_PASSWORD"
+  subscribe:
+    environments:
+      - name: dev
+        profile: verify
+      - name: stage
+        profile: verify
+        profileRules:
+          - profile: deploy
+            when:
+              triggerRef: github-push-main
+      - name: prod
+        profile: verify
+        profileRules:
+          - profile: deploy
+            when:
+              triggerRef: github-push-main
+  # How the site runs itself for orun.work's live Preview tab
+  # (saas-parallel-baselining PB4): `orun preview` starts this, and a coding
+  # session keeps it running while it works, so the person watches it change
+  # as it is built. The dev server binds the box's loopback only, on a fixed
+  # port, and installs first, so a checkout the session has not installed yet
+  # still comes up.
+  # It is one Worker, so the tab shows its index, which lists the recipes.
+  # wrangler dev runs it in workerd with its local vars and rate limiting
+  # binding, and reloads it on every edit. The basic-auth pair is a secret no
+  # preview has, so that recipe answers its setup page.
+  preview:
+    run:
+      - sh
+      - -c
+      - pnpm install --frozen-lockfile --prefer-offline --filter "@app/recipes..." && exec node_modules/.bin/wrangler dev --ip 127.0.0.1 --port 8787 --show-interactive-dev-session=false
+    port: 8787
+    path: /
+    env:
+      WRANGLER_SEND_METRICS: "false"
+  parameters:
+    nodeVersion: "22"
+    pnpmVersion: "10.12.1"
+
+    workspaceDir: ../..
+    appDir: .
+
+    turboFilter: "@app/recipes"
+    # Committed, not rendered: the Worker's only bindings are vars and a rate
+    # limiting binding, neither of which carries a resource id to wire. The
+    # composition deploys (and dry-runs) with `--env <environment>`, so the
+    # Worker is edge-middleware-recipes-2-recipes-{stage,prod}.
+    wranglerConfig: wrangler.jsonc
+
+    # Pushed with `wrangler secret bulk` after each deploy, from the
+    # optionalSecretEnv values above that are seeded (none, on a fresh product).
+    runtimeSecrets: "BASIC_AUTH_USER,BASIC_AUTH_PASSWORD"
+
+    installCommand: pnpm install --frozen-lockfile
+    buildCommand: pnpm exec turbo run build --filter=@app/recipes
+    typecheckCommand: pnpm exec turbo run typecheck --filter=@app/recipes
+
+    preDeployCommand: "echo 'No pre-deploy step configured.'"
+    migrationCommand: "echo 'No migrations configured.'"
+    # Smoke: the index lists the recipes (a link, not the product's name, which
+    # is the owner's to change and HTML-escaped when it carries `&` or `'`) and
+    # a recipe answers from the middleware itself. The Worker's URL is the
+    # environment's workers.dev one (${ORUN_ENVIRONMENT} the runner sets for
+    # every step); DEPLOYED_URL overrides it. Each response is buffered before
+    # grep so an early match cannot SIGPIPE curl.
+    smokeCommand: "base=\"${DEPLOYED_URL:-https://edge-middleware-recipes-2-recipes-${ORUN_ENVIRONMENT}.vijayakrishnan12994.workers.dev}\" && html=$(curl -sfL \"${base}/\") && echo \"${html}\" | grep -q 'href=\"/geolocation\"' && json=$(curl -sfL \"${base}/json-response\") && echo \"${json}\" | grep -q '\"message\":\"hello world!\"'"
+  labels:
+    team: platform
+    layer: runtime
+    surface: api
+    runtime: cloudflare
+# orun: redeploy 01-product as_5bf9311d838f47edafb1
